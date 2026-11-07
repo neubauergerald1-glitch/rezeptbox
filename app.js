@@ -121,12 +121,57 @@ async function setImage(id, blob){
   else { await idb.del("images", id); S.images.delete(id); }
   if(urlCache.has(id)){ URL.revokeObjectURL(urlCache.get(id)); urlCache.delete(id); }
 }
+/* Foto eines Rezepts: zuerst ein eigenes (lokal gespeichertes), sonst das aus dem Repository (images/…). */
+const hasPhoto = r => !!r && (S.images.has(r.id) || !!r.img);
 async function imageUrl(id){
-  if(!S.images.has(id)) return "";
-  if(urlCache.has(id)) return urlCache.get(id);
-  const b = await idb.get("images", id); if(!b) return "";
-  const u = URL.createObjectURL(b); urlCache.set(id,u); return u;
+  if(S.images.has(id)){
+    if(urlCache.has(id)) return urlCache.get(id);
+    const b = await idb.get("images", id);
+    if(b){ const u = URL.createObjectURL(b); urlCache.set(id,u); return u; }
+  }
+  return S.recipes.find(x=>x.id===id)?.img || "";
 }
+
+/* ---------- Automatischer Abgleich mit dem Repository ----------
+ * data/recipes.json wird täglich aus der Rezeptbox auf claude.ai erzeugt.
+ * Ein Rezept wird nur ersetzt, wenn es sich dort seit dem letzten Abgleich geändert hat –
+ * Bewertungen/Notizen, die nur in der App geändert wurden, bleiben bis dahin erhalten.
+ * In der App neu angelegte Rezepte (origin "app") werden nie gelöscht. */
+function sig(r){ const s=JSON.stringify(r); let h=2166136261; for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619); } return (h>>>0).toString(36)+"."+s.length; }
+function withoutLocal(r){ const {_rs, ...rest}=r; return rest; }
+let syncing=false;
+async function syncRemote(){
+  if(syncing || !navigator.onLine || location.protocol==="file:") return;
+  syncing=true;
+  try{
+    const res = await fetch("data/recipes.json", {cache:"no-store"});
+    if(!res.ok) return;
+    const remote = await res.json();
+    if(!Array.isArray(remote) || !remote.length) return;
+    const local = new Map(S.recipes.map(r=>[r.id,r]));
+    const put=[], del=[]; let added=0, updated=0;
+    const seen = new Set();
+    for(const raw of remote){
+      const rr = fixRecipe({...raw, id:String(raw.id)}); seen.add(rr.id);
+      const h = sig(rr), l = local.get(rr.id);
+      if(!l){ put.push({...rr,_rs:h}); added++; }
+      else if(l._rs !== h){
+        /* Noch nie abgeglichen (Startdaten oder eingespielte Exportdatei): gleich oder neuer als das Repository → behalten */
+        if(l._rs===undefined && (JSON.stringify(withoutLocal(l))===JSON.stringify(rr) || (l.updatedAt||"") > (rr.updatedAt||""))) put.push({...l,_rs:h});
+        else { put.push({...rr,_rs:h}); updated++; }
+      }
+    }
+    for(const l of S.recipes){ if(!seen.has(l.id) && l._rs!==undefined && l.origin!=="app") del.push(l.id); }
+    if(!put.length && !del.length) return;
+    await idb.putMany("recipes", put);
+    for(const id of del){ await idb.del("recipes", id); }
+    S.recipes = (await idb.all("recipes")).map(fixRecipe);
+    if(!S.openId) render();
+    if(added||updated||del.length) toast(`Rezeptbox aktualisiert: ${[added&&added+" neu", updated&&updated+" geändert", del.length&&del.length+" entfernt"].filter(Boolean).join(", ")}`);
+  }catch(e){ console.warn("Abgleich fehlgeschlagen", e); }
+  finally{ syncing=false; }
+}
+document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible" && S.loaded) syncRemote(); });
 function fillImages(root=document){
   root.querySelectorAll("img[data-img]").forEach(async img=>{
     const u = await imageUrl(img.dataset.img); if(u){ img.src=u; img.hidden=false; img.nextElementSibling?.classList.contains("ph") && img.nextElementSibling.remove(); }
@@ -137,7 +182,7 @@ function fillImages(root=document){
 function extraHit(r,item){
   if(item==="Gekocht") return !!r.cooked;
   if(item==="Noch nicht gekocht") return !r.cooked;
-  if(item==="Mit Foto") return S.images.has(r.id);
+  if(item==="Mit Foto") return hasPhoto(r);
   return (r.rating||0)>=4;
 }
 function matches(r, skipGroup){
@@ -179,7 +224,7 @@ function sorted(list){
 }
 function stars(n){ n=n||0; return n? "★".repeat(n)+"<span style='opacity:.25'>"+"★".repeat(5-n)+"</span>" : ""; }
 function card(r){
-  const t=tagsOf(r), tt=total(r), p=r.nutrition?.protein, hasImg=S.images.has(r.id);
+  const t=tagsOf(r), tt=total(r), p=r.nutrition?.protein, hasImg=hasPhoto(r);
   const tagHtml=[...(t.kueche||[]).filter(x=>x!=="Sonstige").map(x=>`<span class="tag k">${esc(x)}</span>`),...[...(t.ernaehrung||[]),...(t.sport||[])].slice(0,3).map(x=>`<span class="tag">${esc(x)}</span>`)].join("");
   return `<button type="button" class="card" data-id="${esc(r.id)}">
     <div class="thumb">${hasImg?`<img data-img="${esc(r.id)}" alt="" hidden>`:""}<span class="ph">${esc((r.title||"?").trim()[0]||"?")}</span>
@@ -269,7 +314,7 @@ function renderDetail(){
   const scroll=$("#scrim")?.scrollTop||0;
   const checked = new Set($$("ul.ing input:checked").map(i=>i.id));
   const f = (r.servings && S.portions) ? S.portions/r.servings : 1;
-  const n=r.nutrition||{}, t=tagsOf(r), hasImg=S.images.has(r.id);
+  const n=r.nutrition||{}, t=tagsOf(r), hasImg=hasPhoto(r);
   const ing=(r.ingredients||[]).map((l,i)=> l.startsWith("## ") ? `<li class="grp">${esc(l.slice(3))}</li>` : `<li><input type="checkbox" id="ing${i}" ${checked.has("ing"+i)?"checked":""}><label for="ing${i}">${scaleLine(l,f)}</label></li>`).join("");
   const steps=(r.steps||[]).map((s,i)=>`<li data-s="${i}" class="${S.doneSteps.has(i)?"done":""}"><div>${esc(s)}</div></li>`).join("");
   const src=r.source||{};
@@ -485,7 +530,7 @@ function normalize(o, source){
 let ed={draft:null,isNew:false,photo:null,removeImg:false,estimatedNow:false};
 function openEditor(r, isNew=false, photoBlob=null){
   ed={draft:JSON.parse(JSON.stringify(r)), isNew, photo:photoBlob, removeImg:false, estimatedNow:false};
-  const d=ed.draft, t=d.tags||{}, n=d.nutrition||{}, src=d.source||{}, hasImg=!!d.id && S.images.has(d.id);
+  const d=ed.draft, t=d.tags||{}, n=d.nutrition||{}, src=d.source||{}, hasImg=!!d.id && hasPhoto(S.recipes.find(x=>x.id===d.id));
   const tagSets=Object.entries(VOCAB).map(([g,v])=>`<fieldset><legend>${esc(v.label)}</legend><div class="chips">${v.items.map(it=>`<button type="button" class="chip" data-eg="${g}" data-v="${esc(it)}" aria-pressed="${(t[g]||[]).includes(it)}">${esc(it)}</button>`).join("")}</div></fieldset>`).join("");
   openSheet(`
     <div class="sheethead"><h2>${isNew?"Rezept prüfen & speichern":"Rezept bearbeiten"}</h2><button class="x" type="button" aria-label="Schließen" id="eClose">×</button></div>
@@ -568,7 +613,8 @@ async function saveEditor(){
   btn.disabled=true;
   try{
     const doc={...ed.draft, ...c};
-    if(ed.isNew || !doc.id){ doc.id=uid(); doc.createdAt=new Date().toISOString(); doc.rating=doc.rating||0; doc.cooked=!!doc.cooked; doc.notes=doc.notes||""; }
+    if(ed.isNew || !doc.id){ doc.id=uid(); doc.origin="app"; doc.createdAt=new Date().toISOString(); doc.rating=doc.rating||0; doc.cooked=!!doc.cooked; doc.notes=doc.notes||""; }
+    if(ed.removeImg) delete doc.img;
     await saveRecipe(doc);
     if(ed.photo) await setImage(doc.id, ed.photo);
     else if(ed.removeImg) await setImage(doc.id, null);
@@ -651,6 +697,6 @@ function openSettings(){
 }
 
 /* ---------- Start ---------- */
-load().then(()=>{ const m=location.hash.match(/^#r=(.+)$/); if(m) openDetail(decodeURIComponent(m[1])); });
+load().then(()=>{ const m=location.hash.match(/^#r=(.+)$/); if(m) openDetail(decodeURIComponent(m[1])); syncRemote(); });
 if("serviceWorker" in navigator && location.protocol!=="file:"){ navigator.serviceWorker.register("sw.js").catch(()=>{}); }
 })();

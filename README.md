@@ -46,6 +46,18 @@ Die App muss einmal über eine https-Adresse erreichbar sein, z. B. kostenlos mi
 Am iPhone die Adresse in Safari öffnen → Teilen → „Zum Home-Bildschirm“.
 Ab dann startet die Rezeptbox wie eine App und funktioniert auch ohne Internet.
 
+## Täglicher Abgleich mit der Rezeptbox auf claude.ai
+Eine geplante Claude-Aufgabe holt jede Nacht den aktuellen Stand aus der Rezeptbox
+(Rezepte und bis zu 60 neue Fotos pro Lauf) und legt ihn hier ab:
+`data/recipes.json`, `data/meta.json` und `images/`. Erzeugt wird das mit `tools/build_data.py`.
+
+Die App prüft bei jedem Öffnen, ob es einen neueren Stand gibt, und übernimmt ihn:
+- neue Rezepte kommen dazu, gelöschte verschwinden,
+- ein Rezept wird nur ersetzt, wenn es sich in der Rezeptbox geändert hat –
+  Bewertungen oder Notizen, die du nur in der App setzt, bleiben bis dahin erhalten,
+- in der App selbst angelegte Rezepte werden nie gelöscht,
+- eigene Fotos (in der App gewählt oder per Exportdatei eingespielt) haben Vorrang vor den Fotos hier.
+
 ## Hinweise
 - Daten bleiben auf dem jeweiligen Gerät. Für den Umzug auf ein anderes Gerät:
   Einstellungen → „Sicherung herunterladen“ und dort „Sicherung einspielen“.
