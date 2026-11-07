@@ -84,7 +84,7 @@ async function load(){
       await idb.putMany("recipes", list);
       await idb.put("meta", new Date().toISOString(), "seeded");
     }
-    S.recipes = await idb.all("recipes");
+    S.recipes = (await idb.all("recipes")).map(fixRecipe);
     S.images = new Set(await idb.keys("images"));
   }catch(e){
     console.error(e);
@@ -94,6 +94,16 @@ async function load(){
   render();
 }
 
+/* Daten absichern: Themen, Zutaten und Schritte müssen Listen sein (ältere Einträge haben teils einzelne Texte). */
+function asList(v){ return Array.isArray(v) ? v.filter(x=>x!=null&&x!=="").map(String) : (v==null||v==="") ? [] : [String(v)]; }
+function fixRecipe(r){
+  const t = (r.tags && typeof r.tags==="object") ? r.tags : {};
+  r.tags = {}; for(const g of Object.keys(VOCAB)) r.tags[g] = asList(t[g]);
+  r.ingredients = asList(r.ingredients);
+  r.steps = asList(r.steps);
+  if(r.source && typeof r.source!=="object") r.source = {type:"web", url:String(r.source)};
+  return r;
+}
 async function saveRecipe(r){
   r.updatedAt = new Date().toISOString();
   await idb.put("recipes", r);
@@ -203,7 +213,10 @@ $("#filters").addEventListener("click",e=>{ const c=e.target.closest(".chip"); i
 let qTimer; $("#q").addEventListener("input",e=>{ clearTimeout(qTimer); qTimer=setTimeout(()=>{ S.q=e.target.value.trim(); S.shown=PAGE; render(); },120); });
 S.sort = ls.get("sort","new"); $("#sort").value=S.sort;
 $("#sort").addEventListener("change",e=>{ S.sort=e.target.value; S.seed=Math.random(); ls.set("sort",S.sort); S.shown=PAGE; render(); });
-$("#filterToggle").addEventListener("click",()=>{ const f=$("#filters"); f.hidden=!f.hidden; $("#filterToggle").setAttribute("aria-expanded", String(!f.hidden)); ls.set("filtersOpen", !f.hidden); });
+$("#filterToggle").addEventListener("click",()=>{
+  const f=$("#filters"); f.hidden=!f.hidden; $("#filterToggle").setAttribute("aria-expanded", String(!f.hidden)); ls.set("filtersOpen", !f.hidden);
+  if(!f.hidden) window.scrollTo({top:0, behavior:"smooth"}); /* Filterfeld sitzt oben auf der Seite – sonst öffnet es sich außer Sicht */
+});
 if(ls.get("filtersOpen", window.innerWidth>800)){ $("#filters").hidden=false; $("#filterToggle").setAttribute("aria-expanded","true"); }
 $("#reset").addEventListener("click",resetFilters);
 $("#list").addEventListener("click",e=>{
@@ -584,7 +597,7 @@ function openSettings(){
           <div class="row">
             <button class="btn" type="button" id="sExport">Sicherung herunterladen</button>
             <button class="btn" type="button" id="sImport">Sicherung einspielen</button>
-            <input id="sFile" type="file" accept="application/json,.json" hidden>
+            <input id="sFile" type="file" hidden>
           </div>
         </div>
       </fieldset>
@@ -619,12 +632,15 @@ function openSettings(){
       const data=JSON.parse(await f.text());
       const recipes=Array.isArray(data)?data:data.recipes;
       if(!Array.isArray(recipes)) throw new Error("Keine Rezepte in der Datei");
-      const clean=recipes.filter(r=>r&&r.title).map(r=>({...r, id:r.id||uid()}));
+      const clean=recipes.filter(r=>r&&r.title).map(r=>fixRecipe({...r, id:String(r.id||uid())}));
       await idb.putMany("recipes", clean);
-      let ni=0;
-      for(const [id,url] of Object.entries(data.images||{})){ const b=await (await fetch(url)).blob(); await setImage(id,b); ni++; }
-      S.recipes=await idb.all("recipes");
-      render(); st(`${clean.length} Rezepte und ${ni} Fotos eingespielt.`);
+      const imgs=Object.entries(data.images||{}); let ni=0, nf=0;
+      for(const [id,url] of imgs){
+        try{ const b=await (await fetch(url)).blob(); await setImage(id,b); ni++; }catch(_){ nf++; }
+        if((ni+nf)%25===0) st(`<span class="spin"></span>Fotos ${ni+nf} / ${imgs.length} …`);
+      }
+      S.recipes=(await idb.all("recipes")).map(fixRecipe);
+      render(); st(`${clean.length} Rezepte und ${ni} Fotos eingespielt.`+(nf?` ${nf} Fotos konnten nicht gelesen werden.`:"")+(imgs.length?"":" Die Datei enthält keine Fotos – exportiere sie in der Rezeptbox auf claude.ai mit „Für App exportieren“."));
     }catch(err){ st("Einspielen fehlgeschlagen: "+esc(err.message),true); }
   };
   $("#sReset").onclick=()=>{
