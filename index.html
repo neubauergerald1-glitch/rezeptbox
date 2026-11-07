@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Geralds Rezeptbox</title>
+<meta name="description" content="Alle Rezepte an einem Ort – offline, durchsuchbar, mit Portionsrechner.">
+<meta name="theme-color" content="#2C7A4B">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Rezeptbox">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Young+Serif&family=Figtree:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <div>
+        <h1>Geralds Rezeptbox</h1>
+        <p class="sub">Alle Rezepte an einem Ort – aus dem Netz, von Instagram, Cookidoo und aus Kochbüchern.</p>
+      </div>
+      <div class="row">
+        <button class="btn" id="settingsBtn" type="button" aria-label="Einstellungen">
+          <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+          <span class="hide-sm">Einstellungen</span>
+        </button>
+        <button class="btn primary" id="addBtn" type="button">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v12M2 8h12" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+          Rezept hinzufügen
+        </button>
+      </div>
+    </div>
+  </header>
+</div>
+
+<div class="bar">
+  <div class="wrap">
+    <div class="searchrow">
+      <label class="search">
+        <svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="2" fill="none"/><path d="M14 14l4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <input id="q" type="search" placeholder="Suchen: Titel, Zutat, Tag … z. B. Kichererbsen" autocomplete="off" aria-label="Rezepte durchsuchen">
+      </label>
+      <select id="sort" class="sort" aria-label="Sortierung">
+        <option value="new">Neueste zuerst</option>
+        <option value="rating">Beste Bewertung</option>
+        <option value="time">Schnellste zuerst</option>
+        <option value="protein">Meiste Proteine</option>
+        <option value="az">A–Z</option>
+        <option value="random">Zufällig</option>
+      </select>
+      <button class="btn" id="filterToggle" type="button" aria-expanded="false">Filter <span id="filterCount"></span></button>
+    </div>
+  </div>
+</div>
+
+<main class="wrap">
+  <div class="filters" id="filters" hidden></div>
+  <div class="resline"><span id="count">Lade Rezepte …</span><button class="linkbtn" id="reset" type="button" hidden>Filter zurücksetzen</button></div>
+  <div id="list"></div>
+</main>
+
+<div id="layer"></div>
+<script src="app.js"></script>
+</body>
+</html>
