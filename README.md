@@ -10,11 +10,12 @@ und braucht keinen Server und keine Datenbank: Alles wird lokal im Browser gespe
 - Sortierung: neueste, beste Bewertung, schnellste, meiste Proteine, A–Z, zufällig
 - Rezeptansicht mit Portionsrechner, Zutaten zum Abhaken, Schritten zum Abhaken
 - Kochmodus: größere Schrift, Bildschirm bleibt an
+- Wochenplan: Rezepte per Tipp auf Kalendertage legen (in der Rezeptansicht „Einplanen“ oder im Wochenplan „+ Rezept“), Übersicht Woche für Woche; geplante Tage stehen auch auf der Rezeptkarte
 - Bewertung, „Schon gekocht“, eigene Notizen, Teilen
 - Rezepte anlegen, bearbeiten, löschen, eigenes Foto pro Rezept
 - Optional: Rezepte aus Text oder Fotos (Kochbuchseite, Screenshot) mit Claude erfassen –
   dafür in den Einstellungen einen eigenen API-Schlüssel von console.anthropic.com eintragen
-- Sicherung als JSON-Datei herunterladen und wieder einspielen (inkl. Fotos)
+- Sicherung als JSON-Datei herunterladen und wieder einspielen (inkl. Fotos und Wochenplan)
 
 ## Dateien
 | Datei | Inhalt |

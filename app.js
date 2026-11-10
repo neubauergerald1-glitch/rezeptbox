@@ -20,7 +20,8 @@ const PAGE = 60;
 const S = {
   recipes:[], images:new Set(), loaded:false, q:"", sort:"new", shown:PAGE, seed:Math.random(),
   sel:{kueche:new Set(),ernaehrung:new Set(),gang:new Set(),sport:new Set(),extra:new Set()},
-  openId:null, portions:null, cook:false, wakeLock:null, doneSteps:new Set()
+  openId:null, portions:null, cook:false, wakeLock:null, doneSteps:new Set(),
+  plan:{}, back:null, planPick:false, calFrom:0, planWeek:null, planAddFor:null, planQ:""
 };
 const urlCache = new Map();
 
@@ -86,6 +87,7 @@ async function load(){
     }
     S.recipes = (await idb.all("recipes")).map(fixRecipe);
     S.images = new Set(await idb.keys("images"));
+    S.plan = (await idb.get("meta","plan")) || {};
   }catch(e){
     console.error(e);
     $("#count").textContent = "Fehler beim Laden: " + e.message;
@@ -131,6 +133,124 @@ async function imageUrl(id){
   }
   return S.recipes.find(x=>x.id===id)?.img || "";
 }
+
+/* ---------- Wochenplan ----------
+ * S.plan = {"2026-11-24": ["rezept-id", …], …} – lokal in IndexedDB (meta/plan), Teil der Sicherung. */
+const WD=["Mo","Di","Mi","Do","Fr","Sa","So"], WDL=["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"];
+const MON=["Jän.","Feb.","März","Apr.","Mai","Juni","Juli","Aug.","Sep.","Okt.","Nov.","Dez."];
+const pad2=n=>String(n).padStart(2,"0");
+const dkey=d=>`${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}`;
+const fromKey=k=>{ const [y,m,d]=k.split("-").map(Number); return new Date(y,m-1,d); };
+const addDays=(d,n)=>{ const x=new Date(d.getFullYear(),d.getMonth(),d.getDate()); x.setDate(x.getDate()+n); return x; };
+const wday=d=>(d.getDay()+6)%7;
+const monday=d=>addDays(d,-wday(d));
+const today=()=>{ const n=new Date(); return new Date(n.getFullYear(),n.getMonth(),n.getDate()); };
+const fmtDay=d=>`${WD[wday(d)]} ${d.getDate()}.${d.getMonth()+1}.`;
+function isoWeek(d){ const t=addDays(d,3-wday(d)); const y1=new Date(t.getFullYear(),0,4); return 1+Math.round(((t-y1)/864e5-3+wday(y1))/7); }
+async function savePlan(){
+  for(const k of Object.keys(S.plan)){ if(!S.plan[k]?.length) delete S.plan[k]; }
+  try{ await idb.put("meta", S.plan, "plan"); }catch(e){ toast("Wochenplan konnte nicht gespeichert werden"); }
+}
+const planHas=(k,id)=>(S.plan[k]||[]).includes(id);
+async function planToggle(k,id){
+  const l=S.plan[k]||(S.plan[k]=[]);
+  const i=l.indexOf(id); i>=0 ? l.splice(i,1) : l.push(id);
+  await savePlan(); return i<0;
+}
+const plannedDates=id=>Object.keys(S.plan).filter(k=>planHas(k,id)).sort();
+const nextPlanned=id=>{ const t=dkey(today()); return plannedDates(id).find(k=>k>=t); };
+async function planPurge(id){ let ch=false; for(const k of Object.keys(S.plan)){ const l=S.plan[k]; const i=l.indexOf(id); if(i>=0){ l.splice(i,1); ch=true; } } if(ch) await savePlan(); }
+
+/* Kalender zum Einplanen eines Rezepts (in der Rezeptansicht) */
+function calHtml(id){
+  const t=today(), start=addDays(monday(t), S.calFrom*7), end=addDays(start,34);
+  const range=`${start.getDate()}. ${MON[start.getMonth()]} – ${end.getDate()}. ${MON[end.getMonth()]}${end.getFullYear()!==t.getFullYear()?" "+end.getFullYear():""}`;
+  let cells="";
+  for(let i=0;i<35;i++){
+    const d=addDays(start,i), k=dkey(d), past=d<t, on=planHas(k,id), others=(S.plan[k]||[]).filter(x=>x!==id && S.recipes.some(r=>r.id===x)).length;
+    const first=d.getDate()===1||i===0;
+    cells+=`<button type="button" class="cday${on?" on":""}${dkey(t)===k?" today":""}${others?" has":""}" data-k="${k}" ${past&&!on?"disabled":""} aria-pressed="${on}" aria-label="${WDL[wday(d)]}, ${d.getDate()}. ${MON[d.getMonth()]}${others?`, ${others} weitere${others>1?"":"s"} Rezept${others>1?"e":""} geplant`:""}">${first?`<small>${MON[d.getMonth()]}</small>`:""}${d.getDate()}</button>`;
+  }
+  const dates=plannedDates(id);
+  return `<div class="planpick">
+    <div class="row" style="justify-content:space-between"><strong>Tag antippen zum Einplanen</strong><button class="btn ghost" type="button" id="ppDone">Fertig</button></div>
+    <div class="calnav"><button class="btn" type="button" id="calPrev" ${S.calFrom<=0?"disabled":""} aria-label="Frühere Wochen">‹</button><span>${range}</span><button class="btn" type="button" id="calNext" aria-label="Spätere Wochen">›</button></div>
+    <div class="cal">${WD.map(w=>`<span class="cwd">${w}</span>`).join("")}${cells}</div>
+    <p class="hint">Punkt = an diesem Tag ist schon etwas anderes geplant. Nochmals antippen entfernt den Tag wieder.${dates.length?"":" "}</p>
+  </div>`;
+}
+
+/* Übersicht: eine Woche, Tag für Tag */
+function openPlan(){ if(!S.planWeek) S.planWeek=monday(today()); S.planAddFor=null; S.openId=null; renderPlan(); }
+function planEntry(r,k){
+  const tt=total(r);
+  return `<div class="pentry">
+    <button type="button" class="popen" data-open="${esc(r.id)}">
+      <span class="pthumb">${hasPhoto(r)?`<img data-img="${esc(r.id)}" alt="" hidden>`:""}<span class="ph">${esc((r.title||"?").trim()[0]||"?")}</span></span>
+      <span class="ptxt"><span class="ptitle">${esc(r.title||"Ohne Titel")}</span>${tt?`<span class="pmeta">${tt} Min</span>`:""}</span>
+    </button>
+    <button type="button" class="pdel" data-del="${esc(r.id)}" data-k="${k}" aria-label="„${esc(r.title)}“ aus dem Plan entfernen">×</button>
+  </div>`;
+}
+function pickList(){
+  const q=S.planQ.toLowerCase().split(/\s+/).filter(Boolean);
+  const hits=S.recipes.filter(r=>{ if(!q.length) return true; const h=[r.title,(r.ingredients||[]).join(" "),Object.values(tagsOf(r)).flat().join(" ")].join(" ").toLowerCase(); return q.every(w=>h.includes(w)); })
+    .sort((a,b)=>(b.rating||0)-(a.rating||0)||(a.title||"").localeCompare(b.title||"","de")).slice(0,50);
+  return hits.map(r=>`<button type="button" class="pick${planHas(S.planAddFor,r.id)?" on":""}" data-add="${esc(r.id)}"><span class="pthumb">${hasPhoto(r)?`<img data-img="${esc(r.id)}" alt="" hidden>`:""}<span class="ph">${esc((r.title||"?").trim()[0]||"?")}</span></span><span class="ptxt"><span class="ptitle">${esc(r.title||"Ohne Titel")}</span><span class="pmeta">${[total(r)?total(r)+" Min":"", r.rating?"★".repeat(r.rating):"", planHas(S.planAddFor,r.id)?"schon geplant":""].filter(Boolean).join(" · ")}</span></span></button>`).join("")||`<p class="hint">Nichts gefunden.</p>`;
+}
+function renderPlan(){
+  const scroll=$("#scrim")?.scrollTop||0;
+  const t=today(), mo=S.planWeek, su=addDays(mo,6);
+  let body;
+  if(S.planAddFor){
+    const d=fromKey(S.planAddFor);
+    body=`<div class="ipad">
+      <div class="row" style="justify-content:space-between"><strong>Rezept für ${WDL[wday(d)]}, ${d.getDate()}. ${MON[d.getMonth()]}</strong><button class="btn ghost" type="button" id="paBack">Zurück</button></div>
+      <label class="search"><svg width="18" height="18" viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="6" stroke="currentColor" stroke-width="2" fill="none"/><path d="M14 14l4 4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><input id="paQ" type="search" placeholder="Rezept suchen, z. B. Krautfleckerl" autocomplete="off" value="${esc(S.planQ)}" aria-label="Rezept suchen"></label>
+      <div class="plist" id="paList">${pickList()}</div>
+    </div>`;
+  } else {
+    const days=[...Array(7)].map((_,i)=>{
+      const d=addDays(mo,i), k=dkey(d), list=(S.plan[k]||[]).map(id=>S.recipes.find(r=>r.id===id)).filter(Boolean);
+      return `<section class="pday${k===dkey(t)?" today":""}${d<t?" past":""}">
+        <div class="pdh"><span><b>${WDL[i]}</b> ${d.getDate()}. ${MON[d.getMonth()]}${k===dkey(t)?` <span class="tag k">Heute</span>`:""}</span><button type="button" class="padd" data-addfor="${k}" aria-label="Rezept für ${WDL[i]} hinzufügen">+ Rezept</button></div>
+        ${list.map(r=>planEntry(r,k)).join("")}
+      </section>`;
+    }).join("");
+    const n=Object.entries(S.plan).filter(([k])=>k>=dkey(mo)&&k<=dkey(su)).reduce((a,[,l])=>a+l.filter(id=>S.recipes.some(r=>r.id===id)).length,0);
+    body=`<div class="ipad">
+      <div class="calnav"><button class="btn" type="button" id="pwPrev" aria-label="Vorige Woche">‹</button>
+        <span><b>KW ${isoWeek(mo)}</b> · ${mo.getDate()}. ${MON[mo.getMonth()]} – ${su.getDate()}. ${MON[su.getMonth()]} ${su.getFullYear()}</span>
+        <button class="btn" type="button" id="pwNext" aria-label="Nächste Woche">›</button></div>
+      ${dkey(mo)!==dkey(monday(t))?`<div class="row" style="justify-content:center"><button class="linkbtn" type="button" id="pwToday">Zur aktuellen Woche</button></div>`:""}
+      <p class="hint" style="text-align:center">${n?`${n} Rezept${n>1?"e":""} in dieser Woche`:"Noch nichts geplant – tippe bei einem Tag auf „+ Rezept“ oder in einem Rezept auf „Einplanen“."}</p>
+      <div class="pweek">${days}</div>
+    </div>`;
+  }
+  openSheet(`<div class="sheethead"><h2>Wochenplan</h2><button class="x" type="button" aria-label="Schließen" id="pClose">×</button></div>${body}`, "narrow");
+  $("#scrim").scrollTop=scroll;
+  fillImages($("#layer"));
+  $("#pClose").onclick=closeSheet;
+  if(S.planAddFor){
+    $("#paBack").onclick=()=>{ S.planAddFor=null; renderPlan(); };
+    let tm; $("#paQ").oninput=e=>{ clearTimeout(tm); tm=setTimeout(()=>{ S.planQ=e.target.value; $("#paList").innerHTML=pickList(); fillImages($("#paList")); },120); };
+    if(!("ontouchstart" in window)) $("#paQ").focus();
+    $("#paList").onclick=async e=>{ const b=e.target.closest("[data-add]"); if(!b) return; const k=S.planAddFor;
+      const added=await planToggle(k,b.dataset.add); const r=S.recipes.find(x=>x.id===b.dataset.add);
+      toast(added?`„${r?.title}“ für ${fmtDay(fromKey(k))} eingeplant`:"Aus dem Plan entfernt");
+      S.planAddFor=null; render(); renderPlan(); };
+  } else {
+    $("#pwPrev").onclick=()=>{ S.planWeek=addDays(S.planWeek,-7); renderPlan(); };
+    $("#pwNext").onclick=()=>{ S.planWeek=addDays(S.planWeek,7); renderPlan(); };
+    $("#pwToday")?.addEventListener("click",()=>{ S.planWeek=monday(today()); renderPlan(); });
+    $(".pweek").onclick=async e=>{
+      const a=e.target.closest("[data-addfor]"); if(a){ S.planAddFor=a.dataset.addfor; S.planQ=""; $("#scrim").scrollTop=0; renderPlan(); return; }
+      const d=e.target.closest("[data-del]"); if(d){ await planToggle(d.dataset.k,d.dataset.del); render(); renderPlan(); return; }
+      const o=e.target.closest("[data-open]"); if(o) openDetail(o.dataset.open,"plan");
+    };
+  }
+}
+$("#planBtn").addEventListener("click",()=>openPlan());
 
 /* ---------- Automatischer Abgleich mit dem Repository ----------
  * data/recipes.json wird täglich aus der Rezeptbox auf claude.ai erzeugt.
@@ -228,7 +348,7 @@ function card(r){
   const tagHtml=[...(t.kueche||[]).filter(x=>x!=="Sonstige").map(x=>`<span class="tag k">${esc(x)}</span>`),...[...(t.ernaehrung||[]),...(t.sport||[])].slice(0,3).map(x=>`<span class="tag">${esc(x)}</span>`)].join("");
   return `<button type="button" class="card" data-id="${esc(r.id)}">
     <div class="thumb">${hasImg?`<img data-img="${esc(r.id)}" alt="" hidden>`:""}<span class="ph">${esc((r.title||"?").trim()[0]||"?")}</span>
-      ${r.source?.type?`<span class="src">${esc(SOURCES[r.source.type]||r.source.type)}</span>`:""}${r.cooked?`<span class="done">Gekocht</span>`:""}</div>
+      ${r.source?.type?`<span class="src">${esc(SOURCES[r.source.type]||r.source.type)}</span>`:""}${r.cooked?`<span class="done">Gekocht</span>`:""}${(()=>{ const k=nextPlanned(r.id); return k?`<span class="planned">${fmtDay(fromKey(k))}</span>`:""; })()}</div>
     <div class="cbody">
       <h2 class="ctitle">${esc(r.title||"Ohne Titel")}</h2>
       <div class="meta">${tt?`<span><b>${tt}</b> Min</span>`:""}${p?`<span><b>${Math.round(p)} g</b> Protein</span>`:""}${r.nutrition?.kcal?`<span><b>${Math.round(r.nutrition.kcal)}</b> kcal</span>`:""}${r.rating?`<span class="stars">${stars(r.rating)}</span>`:""}</div>
@@ -281,8 +401,10 @@ function openSheet(html, cls=""){
   $("#scrim").addEventListener("click",e=>{ if(e.target.id==="scrim") closeSheet(); });
 }
 function closeSheet(){
+  const back=S.back; S.back=null; S.planPick=false;
   $("#layer").innerHTML=""; document.body.style.overflow=""; S.openId=null; S.cook=false; releaseWake();
   if(location.hash) history.replaceState(null,"",location.pathname+location.search);
+  if(back==="plan") openPlan();
 }
 document.addEventListener("keydown",e=>{ if(e.key==="Escape" && $("#layer").innerHTML) closeSheet(); });
 
@@ -299,9 +421,10 @@ function scaleLine(line, f){
     return sp+"<b>"+fmtNum(v*f)+"</b>";
   });
 }
-function openDetail(id){
+function openDetail(id, back){
   const r=S.recipes.find(x=>x.id===id); if(!r) return;
-  S.openId=id; S.portions=r.servings||null; S.doneSteps=new Set(); S.cook=false;
+  if(back!==undefined || S.openId!==id) S.back=back||null;
+  S.openId=id; S.portions=r.servings||null; S.doneSteps=new Set(); S.cook=false; S.planPick=false; S.calFrom=0;
   history.replaceState(null,"","#r="+encodeURIComponent(id));
   renderDetail();
 }
@@ -323,16 +446,19 @@ function renderDetail(){
   openSheet(`
     <div class="sheethead"><div class="row">
       <button class="btn ${S.cook?"primary":""}" type="button" id="dCook" title="Bildschirm bleibt an, größere Schrift">${S.cook?"Kochmodus an":"Kochmodus"}</button>
+      <button class="btn ${S.planPick?"primary":""}" type="button" id="dPlan">Einplanen</button>
       <button class="btn" type="button" id="dEdit">Bearbeiten</button>
       ${navigator.share?`<button class="btn ghost" type="button" id="dShare">Teilen</button>`:""}
       <button class="btn ghost danger" type="button" id="dDel">Löschen</button>
     </div><button class="x" type="button" aria-label="Schließen" id="dClose">×</button></div>
     <div id="delConfirm"></div>
+    ${S.planPick?calHtml(r.id):""}
     ${hasImg?`<div class="hero"><img data-img="${esc(r.id)}" alt="" hidden></div>`:""}
     <div class="dpad ${S.cook?"cook":""}">
       <div style="display:grid;gap:8px">
         <h2 class="dtitle">${esc(r.title||"Ohne Titel")}</h2>
         ${r.description?`<p class="desc">${esc(r.description)}</p>`:""}
+        ${(()=>{ const t=dkey(today()), ds=plannedDates(r.id).filter(k=>k>=t); return ds.length?`<p class="plannedline">Geplant: ${ds.map(k=>`<button type="button" class="tag k" data-goweek="${k}">${fmtDay(fromKey(k))}</button>`).join(" ")}</p>`:""; })()}
         <div class="tags">${allTags}</div>
       </div>
       <div class="facts">
@@ -365,6 +491,15 @@ function renderDetail(){
   fillImages($("#layer"));
   $("#dClose").onclick=closeSheet;
   $("#dEdit").onclick=()=>openEditor(r);
+  $("#dPlan").onclick=()=>{ S.planPick=!S.planPick; S.calFrom=0; renderDetail(); if(S.planPick) $("#scrim").scrollTop=0; };
+  if(S.planPick){
+    $("#ppDone").onclick=()=>{ S.planPick=false; renderDetail(); };
+    $("#calPrev").onclick=()=>{ S.calFrom=Math.max(0,S.calFrom-5); renderDetail(); };
+    $("#calNext").onclick=()=>{ S.calFrom+=5; renderDetail(); };
+    $(".cal").onclick=async e=>{ const b=e.target.closest("[data-k]"); if(!b||b.disabled) return;
+      const added=await planToggle(b.dataset.k,r.id); toast(added?`Eingeplant für ${fmtDay(fromKey(b.dataset.k))}`:"Aus dem Plan entfernt"); render(); renderDetail(); };
+  }
+  $$("[data-goweek]").forEach(b=>b.onclick=()=>{ S.planWeek=monday(fromKey(b.dataset.goweek)); S.back=null; openPlan(); });
   $("#dCook").onclick=()=>{ S.cook=!S.cook; S.cook?requestWake():releaseWake(); renderDetail(); };
   if($("#dShare")) $("#dShare").onclick=()=>{
     const text=`${r.title}\n\nZutaten:\n${(r.ingredients||[]).map(l=>l.startsWith("## ")?"\n"+l.slice(3)+":":"• "+l).join("\n")}\n\nZubereitung:\n${(r.steps||[]).map((s,i)=>(i+1)+". "+s).join("\n")}${src.url?"\n\nQuelle: "+src.url:""}`;
@@ -374,7 +509,7 @@ function renderDetail(){
     $("#delConfirm").innerHTML=`<div class="confirm" style="margin:12px 16px 0"><span>„${esc(r.title)}“ endgültig löschen?</span><button class="btn danger" type="button" id="delYes">Löschen</button><button class="btn ghost" type="button" id="delNo">Abbrechen</button></div>`;
     $("#delNo").onclick=()=>$("#delConfirm").innerHTML="";
     $("#delYes").onclick=async()=>{
-      try{ await idb.del("recipes", r.id); await setImage(r.id, null); S.recipes=S.recipes.filter(x=>x.id!==r.id); closeSheet(); render(); toast("Rezept gelöscht"); }
+      try{ await idb.del("recipes", r.id); await setImage(r.id, null); await planPurge(r.id); S.recipes=S.recipes.filter(x=>x.id!==r.id); closeSheet(); render(); toast("Rezept gelöscht"); }
       catch(e){ toast("Löschen fehlgeschlagen"); }
     };
   };
@@ -639,7 +774,7 @@ function openSettings(){
       </fieldset>
       <fieldset><legend>Sicherung</legend>
         <div style="display:grid;gap:10px">
-          <p class="hint">Alle Rezepte, Bewertungen, Notizen und Fotos liegen lokal auf diesem Gerät. Mach regelmäßig eine Sicherung – damit kannst du die Rezepte auch auf ein anderes Gerät übertragen.</p>
+          <p class="hint">Alle Rezepte, Bewertungen, Notizen, Fotos und der Wochenplan liegen lokal auf diesem Gerät. Mach regelmäßig eine Sicherung – damit kannst du die Rezepte auch auf ein anderes Gerät übertragen.</p>
           <div class="row">
             <button class="btn" type="button" id="sExport">Sicherung herunterladen</button>
             <button class="btn" type="button" id="sImport">Sicherung einspielen</button>
@@ -649,7 +784,7 @@ function openSettings(){
       </fieldset>
       <fieldset><legend>Zurücksetzen</legend>
         <div style="display:grid;gap:10px">
-          <p class="hint">Stellt die ursprünglichen ${"Rezepte"} wieder her. Eigene Änderungen, neue Rezepte und Fotos gehen verloren.</p>
+          <p class="hint">Stellt die ursprünglichen ${"Rezepte"} wieder her. Eigene Änderungen, neue Rezepte, Fotos und der Wochenplan gehen verloren.</p>
           <div id="resetBox"><button class="btn danger" type="button" id="sReset">Auf Originaldaten zurücksetzen</button></div>
         </div>
       </fieldset>
@@ -665,7 +800,7 @@ function openSettings(){
     try{
       const images={};
       for(const id of S.images){ const b=await idb.get("images",id); if(b) images[id]=`data:${b.type||"image/jpeg"};base64,`+await blobToB64(b); }
-      const blob=new Blob([JSON.stringify({app:"rezeptbox",version:1,exportedAt:new Date().toISOString(),recipes:S.recipes,images})],{type:"application/json"});
+      const blob=new Blob([JSON.stringify({app:"rezeptbox",version:1,exportedAt:new Date().toISOString(),recipes:S.recipes,plan:S.plan,images})],{type:"application/json"});
       const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`rezeptbox-sicherung-${new Date().toISOString().slice(0,10)}.json`; document.body.appendChild(a); a.click(); a.remove();
       st("Sicherung heruntergeladen.");
     }catch(e){ st("Fehler: "+esc(e.message),true); }
@@ -680,6 +815,7 @@ function openSettings(){
       if(!Array.isArray(recipes)) throw new Error("Keine Rezepte in der Datei");
       const clean=recipes.filter(r=>r&&r.title).map(r=>fixRecipe({...r, id:String(r.id||uid())}));
       await idb.putMany("recipes", clean);
+      if(data.plan && typeof data.plan==="object"){ for(const [k,l] of Object.entries(data.plan)){ if(/^\d{4}-\d\d-\d\d$/.test(k) && Array.isArray(l)) for(const id of l){ if(!planHas(k,String(id))) (S.plan[k]||(S.plan[k]=[])).push(String(id)); } } await savePlan(); }
       const imgs=Object.entries(data.images||{}); let ni=0, nf=0;
       for(const [id,url] of imgs){
         try{ const b=await (await fetch(url)).blob(); await setImage(id,b); ni++; }catch(_){ nf++; }
@@ -692,7 +828,7 @@ function openSettings(){
   $("#sReset").onclick=()=>{
     $("#resetBox").innerHTML=`<div class="confirm"><span>Wirklich alles zurücksetzen?</span><button class="btn danger" type="button" id="rYes">Zurücksetzen</button><button class="btn ghost" type="button" id="rNo">Abbrechen</button></div>`;
     $("#rNo").onclick=openSettings;
-    $("#rYes").onclick=async()=>{ await idb.clear("recipes"); await idb.clear("images"); await idb.del("meta","seeded"); urlCache.clear(); S.images.clear(); closeSheet(); S.loaded=false; await load(); toast("Zurückgesetzt"); };
+    $("#rYes").onclick=async()=>{ await idb.clear("recipes"); await idb.clear("images"); await idb.del("meta","seeded"); await idb.del("meta","plan"); S.plan={}; urlCache.clear(); S.images.clear(); closeSheet(); S.loaded=false; await load(); toast("Zurückgesetzt"); };
   };
 }
 
