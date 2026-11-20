@@ -11,6 +11,7 @@ und braucht keinen Server und keine Datenbank: Alles wird lokal im Browser gespe
 - Rezeptansicht mit Portionsrechner, Zutaten zum Abhaken, Schritten zum Abhaken
 - Kochmodus: größere Schrift, Bildschirm bleibt an
 - Wochenplan: Rezepte per Tipp auf Kalendertage legen (in der Rezeptansicht „Einplanen“ oder im Wochenplan „+ Rezept“), Übersicht Woche für Woche; geplante Tage stehen auch auf der Rezeptkarte
+- Essensplan: die nächsten 7 Tage, zufällig aus der Rezeptbox befüllt – bevorzugt gesunde, proteinreiche Hauptgerichte, Mo–Fr schnell (bis 35 Min), am Wochenende gern aufwendiger, samstags zusätzlich ein Kuchen oder Dessert; Würfel-Knopf pro Gericht schlägt ein anderes vor, „In den Wochenplan übernehmen“ trägt alles in den Kalender ein
 - Bewertung, „Schon gekocht“, eigene Notizen, Teilen
 - Rezepte anlegen, bearbeiten, löschen, eigenes Foto pro Rezept
 - Optional: Rezepte aus Text oder Fotos (Kochbuchseite, Screenshot) mit Claude erfassen –

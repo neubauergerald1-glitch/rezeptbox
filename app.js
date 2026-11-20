@@ -21,7 +21,8 @@ const S = {
   recipes:[], images:new Set(), loaded:false, q:"", sort:"new", shown:PAGE, seed:Math.random(),
   sel:{kueche:new Set(),ernaehrung:new Set(),gang:new Set(),sport:new Set(),extra:new Set()},
   openId:null, portions:null, cook:false, wakeLock:null, doneSteps:new Set(),
-  plan:{}, back:null, planPick:false, calFrom:0, planWeek:null, planAddFor:null, planQ:""
+  plan:{}, back:null, planPick:false, calFrom:0, planWeek:null, planAddFor:null, planQ:"",
+  meals:{days:{}, history:[]}
 };
 const urlCache = new Map();
 
@@ -88,6 +89,8 @@ async function load(){
     S.recipes = (await idb.all("recipes")).map(fixRecipe);
     S.images = new Set(await idb.keys("images"));
     S.plan = (await idb.get("meta","plan")) || {};
+    const m = await idb.get("meta","meals");
+    if(m && typeof m==="object") S.meals = {days:m.days||{}, history:Array.isArray(m.history)?m.history:[]};
   }catch(e){
     console.error(e);
     $("#count").textContent = "Fehler beim Laden: " + e.message;
@@ -252,6 +255,165 @@ function renderPlan(){
 }
 $("#planBtn").addEventListener("click",()=>openPlan());
 
+/* ---------- Essensplan: die nächsten 7 Tage, zufällig befüllt ----------
+ * S.meals.days = {"2026-11-21": {main:"rezept-id", sweet:"rezept-id" (nur Samstag), skip:[…]}}
+ * - jeden Tag ein Gericht, bevorzugt Hauptgerichte, gesund und proteinreich gewichtet
+ * - Mo–Fr kurze Zubereitung (bis ca. 35 Min), Sa/So gern aufwendiger
+ * - Samstag zusätzlich ein Kuchen oder Dessert
+ * - „Anderes Gericht“ würfelt einen Tag neu; vergangene Tage fallen weg und kommen in die Historie,
+ *   damit dieselben Gerichte nicht gleich wieder vorgeschlagen werden. */
+const CAKE_RX=/kuchen|torte|gugelhupf|guglhupf|schnitte|strudel|roulade|tarte|muffin|brownie|cake|fleck|tiramisu|crumble|pie|kipferl|krapfen|zopf|striezel|biskuit|blech|streusel|cookie|keks/i;
+const isWeekend=d=>wday(d)>=5;
+const has=(r,g,v)=>(tagsOf(r)[g]||[]).includes(v);
+function mainPool(){
+  return S.recipes.filter(r=>{
+    const g=tagsOf(r).gang||[];
+    if(g.some(x=>["Dessert","Gebäck","Getränk"].includes(x))) return false;
+    if(g.includes("Hauptgericht")) return true;
+    /* Salate und Suppen nur, wenn sie satt machen (proteinreich) – mit geringerem Gewicht */
+    return (g.includes("Salat")||g.includes("Suppe")) && has(r,"ernaehrung","High Protein");
+  });
+}
+function sweetPool(){
+  return S.recipes.filter(r=>{
+    const g=tagsOf(r).gang||[];
+    if(g.some(x=>["Hauptgericht","Salat","Suppe","Beilage","Getränk"].includes(x))) return false;
+    return g.includes("Dessert") || (g.includes("Gebäck") && CAKE_RX.test(r.title||""));
+  });
+}
+function healthWeight(r){
+  const n=r.nutrition||{}; let w=1;
+  if(has(r,"ernaehrung","High Protein")) w*=3;
+  if(has(r,"ernaehrung","Leicht")) w*=2;
+  if(has(r,"ernaehrung","Low Carb")) w*=1.4;
+  if(has(r,"ernaehrung","Vegetarisch")||has(r,"ernaehrung","Vegan")) w*=1.15;
+  if(has(r,"sport","Nach dem Training")||has(r,"sport","Regeneration")) w*=1.2;
+  if(has(r,"sport","Soulfood")) w*=0.45;
+  if(n.protein>=30) w*=1.5; else if(n.protein>=20) w*=1.2; else if(n.protein!=null && n.protein<12) w*=0.6;
+  if(n.kcal>850) w*=0.3; else if(n.kcal>700) w*=0.6;
+  if((r.rating||0)>=4) w*=1.5;
+  if(!(tagsOf(r).gang||[]).includes("Hauptgericht")) w*=0.35;
+  return w;
+}
+function weighted(list, wf){
+  const ws=list.map(wf), sum=ws.reduce((a,b)=>a+b,0);
+  if(!list.length || sum<=0) return null;
+  let x=Math.random()*sum;
+  for(let i=0;i<list.length;i++){ x-=ws[i]; if(x<=0) return list[i]; }
+  return list[list.length-1];
+}
+/* Wählt ein Gericht für Tag k. exclude = schon in diesem Plan verwendete bzw. abgelehnte IDs. */
+function pickMain(k, exclude){
+  const d=fromKey(k), we=isWeekend(d);
+  let pool=mainPool().filter(r=>!exclude.has(r.id));
+  const recent=new Set(S.meals.history);
+  const fresh=pool.filter(r=>!recent.has(r.id)); if(fresh.length>=10) pool=fresh;
+  if(!we){
+    const quick=pool.filter(r=>{ const t=total(r); return (t && t<=35) || has(r,"sport","Schnell (<30 Min)"); });
+    const medium=pool.filter(r=>{ const t=total(r); return t && t<=45; });
+    pool = quick.length>=5 ? quick : medium.length ? medium : pool;
+  }
+  const r=weighted(pool, r=>{
+    let w=healthWeight(r); const t=total(r)||0;
+    if(we){ if(t>240) w*=0.6; else if(t>=45) w*=1.6; else if(t && t<=20) w*=0.7; }
+    else if(t && t<=25) w*=1.2;
+    return w;
+  });
+  return r?.id||null;
+}
+function pickSweet(exclude){
+  let pool=sweetPool().filter(r=>!exclude.has(r.id));
+  const recent=new Set(S.meals.history); const fresh=pool.filter(r=>!recent.has(r.id)); if(fresh.length>=5) pool=fresh;
+  return weighted(pool, r=>((r.rating||0)>=4?1.6:1) * (CAKE_RX.test(r.title||"")?1.3:1))?.id||null;
+}
+const mealKeys=()=>{ const t=today(); return [...Array(7)].map((_,i)=>dkey(addDays(t,i))); };
+const exists=id=>!!id && S.recipes.some(r=>r.id===id);
+function usedIds(exceptKey){
+  const s=new Set();
+  for(const [k,v] of Object.entries(S.meals.days)){ if(k===exceptKey) continue; if(v.main) s.add(v.main); if(v.sweet) s.add(v.sweet); }
+  return s;
+}
+async function saveMeals(){ try{ await idb.put("meta", S.meals, "meals"); }catch(e){ toast("Essensplan konnte nicht gespeichert werden"); } }
+/* Vergangene Tage entfernen (→ Historie) und fehlende Tage/Gerichte auffüllen. */
+async function ensureMeals(){
+  const keys=mealKeys(), first=keys[0]; let changed=false;
+  for(const k of Object.keys(S.meals.days)){
+    if(k<first){ const v=S.meals.days[k]; [v.main,v.sweet].forEach(id=>{ if(id) S.meals.history.push(id); }); delete S.meals.days[k]; changed=true; }
+  }
+  S.meals.history=S.meals.history.slice(-28);
+  for(const k of keys){
+    const day=S.meals.days[k]||(S.meals.days[k]={skip:[]});
+    if(!exists(day.main)){ day.main=pickMain(k, new Set([...usedIds(k), ...(day.skip||[])])); changed=true; }
+    const sat=wday(fromKey(k))===5;
+    if(sat && !exists(day.sweet)){ day.sweet=pickSweet(new Set([...usedIds(k), ...(day.skip||[])])); changed=true; }
+    if(!sat && day.sweet){ delete day.sweet; changed=true; }
+  }
+  if(changed) await saveMeals();
+}
+async function rerollMeal(k, slot){
+  const day=S.meals.days[k]; if(!day) return;
+  const old=day[slot]; day.skip=[...(day.skip||[]), old].filter(Boolean).slice(-15);
+  const ex=new Set([...usedIds(k), ...day.skip, day[slot==="main"?"sweet":"main"]].filter(Boolean));
+  let next = slot==="main" ? pickMain(k, ex) : pickSweet(ex);
+  if(!next){ day.skip=[]; next = slot==="main" ? pickMain(k, new Set([old,...usedIds(k)].filter(Boolean))) : pickSweet(new Set([old,...usedIds(k)].filter(Boolean))); }
+  if(next) day[slot]=next;
+  await saveMeals();
+}
+function mealEntry(r, k, slot){
+  const tt=total(r), p=r.nutrition?.protein, kcal=r.nutrition?.kcal;
+  return `<div class="pentry">
+    <button type="button" class="popen" data-open="${esc(r.id)}">
+      <span class="pthumb">${hasPhoto(r)?`<img data-img="${esc(r.id)}" alt="" hidden>`:""}<span class="ph">${esc((r.title||"?").trim()[0]||"?")}</span></span>
+      <span class="ptxt"><span class="ptitle">${esc(r.title||"Ohne Titel")}</span><span class="pmeta">${[tt?tt+" Min":"", slot==="main"&&p?Math.round(p)+" g Protein":"", kcal?Math.round(kcal)+" kcal":""].filter(Boolean).join(" · ")}</span></span>
+    </button>
+    <button type="button" class="reroll" data-reroll="${slot}" data-k="${k}" aria-label="Anderes ${slot==="main"?"Gericht":"Dessert"} für diesen Tag vorschlagen" title="Anderes ${slot==="main"?"Gericht":"Dessert"} vorschlagen">
+      <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="8.5" cy="8.5" r="1.5" fill="currentColor"/><circle cx="15.5" cy="15.5" r="1.5" fill="currentColor"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg>
+    </button>
+  </div>`;
+}
+async function openMeals(){ S.openId=null; await ensureMeals(); renderMeals(); }
+function renderMeals(){
+  const scroll=$("#scrim")?.scrollTop||0;
+  const t=dkey(today());
+  const days=mealKeys().map(k=>{
+    const d=fromKey(k), day=S.meals.days[k]||{}, we=isWeekend(d), sat=wday(d)===5;
+    const main=S.recipes.find(r=>r.id===day.main), sweet=S.recipes.find(r=>r.id===day.sweet);
+    return `<section class="pday${k===t?" today":""}">
+      <div class="pdh"><span><b>${WDL[wday(d)]}</b> ${d.getDate()}. ${MON[d.getMonth()]}${k===t?` <span class="tag k">Heute</span>`:""}</span><span class="tag">${we?"Zeit zum Kochen":"Schnell"}</span></div>
+      ${main?mealEntry(main,k,"main"):`<p class="hint">Kein passendes Gericht gefunden.</p>`}
+      ${sat?`<div class="mlabel">Kuchen oder Dessert</div>${sweet?mealEntry(sweet,k,"sweet"):`<p class="hint">Kein Kuchen oder Dessert gefunden.</p>`}`:""}
+    </section>`;
+  }).join("");
+  openSheet(`<div class="sheethead"><h2>Essensplan</h2><button class="x" type="button" aria-label="Schließen" id="mClose">×</button></div>
+    <div class="ipad">
+      <p class="hint">Die nächsten 7 Tage – gesund und eher proteinreich, unter der Woche schnell, am Wochenende darf es aufwendiger sein. Gefällt dir ein Gericht nicht, tippe auf den Würfel.</p>
+      <div class="pweek" id="mWeek">${days}</div>
+      <div class="row" style="justify-content:space-between">
+        <button class="btn" type="button" id="mAll">Alle neu würfeln</button>
+        <button class="btn" type="button" id="mToPlan" title="Trägt die Gerichte in den Wochenplan-Kalender ein">In den Wochenplan übernehmen</button>
+      </div>
+    </div>`, "narrow");
+  $("#scrim").scrollTop=scroll;
+  fillImages($("#layer"));
+  $("#mClose").onclick=closeSheet;
+  $("#mWeek").onclick=async e=>{
+    const rr=e.target.closest("[data-reroll]");
+    if(rr){ rr.disabled=true; await rerollMeal(rr.dataset.k, rr.dataset.reroll); renderMeals(); return; }
+    const o=e.target.closest("[data-open]"); if(o) openDetail(o.dataset.open,"meals");
+  };
+  $("#mAll").onclick=async()=>{
+    for(const k of mealKeys()){ const v=S.meals.days[k]; if(v){ v.skip=[...(v.skip||[]), v.main, v.sweet].filter(Boolean).slice(-15); delete v.main; delete v.sweet; } }
+    await ensureMeals(); renderMeals(); toast("Neuer Essensplan");
+  };
+  $("#mToPlan").onclick=async()=>{
+    let n=0;
+    for(const k of mealKeys()){ const v=S.meals.days[k]||{}; for(const id of [v.main,v.sweet]){ if(exists(id) && !planHas(k,id)){ (S.plan[k]||(S.plan[k]=[])).push(id); n++; } } }
+    await savePlan(); render();
+    toast(n?`${n} Gericht${n>1?"e":""} in den Wochenplan eingetragen`:"Schon alles im Wochenplan");
+  };
+}
+$("#mealsBtn").addEventListener("click",()=>openMeals());
+
 /* ---------- Automatischer Abgleich mit dem Repository ----------
  * data/recipes.json wird täglich aus der Rezeptbox auf claude.ai erzeugt.
  * Ein Rezept wird nur ersetzt, wenn es sich dort seit dem letzten Abgleich geändert hat –
@@ -405,6 +567,7 @@ function closeSheet(){
   $("#layer").innerHTML=""; document.body.style.overflow=""; S.openId=null; S.cook=false; releaseWake();
   if(location.hash) history.replaceState(null,"",location.pathname+location.search);
   if(back==="plan") openPlan();
+  if(back==="meals") openMeals();
 }
 document.addEventListener("keydown",e=>{ if(e.key==="Escape" && $("#layer").innerHTML) closeSheet(); });
 
@@ -800,7 +963,7 @@ function openSettings(){
     try{
       const images={};
       for(const id of S.images){ const b=await idb.get("images",id); if(b) images[id]=`data:${b.type||"image/jpeg"};base64,`+await blobToB64(b); }
-      const blob=new Blob([JSON.stringify({app:"rezeptbox",version:1,exportedAt:new Date().toISOString(),recipes:S.recipes,plan:S.plan,images})],{type:"application/json"});
+      const blob=new Blob([JSON.stringify({app:"rezeptbox",version:1,exportedAt:new Date().toISOString(),recipes:S.recipes,plan:S.plan,meals:S.meals,images})],{type:"application/json"});
       const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`rezeptbox-sicherung-${new Date().toISOString().slice(0,10)}.json`; document.body.appendChild(a); a.click(); a.remove();
       st("Sicherung heruntergeladen.");
     }catch(e){ st("Fehler: "+esc(e.message),true); }
@@ -815,6 +978,7 @@ function openSettings(){
       if(!Array.isArray(recipes)) throw new Error("Keine Rezepte in der Datei");
       const clean=recipes.filter(r=>r&&r.title).map(r=>fixRecipe({...r, id:String(r.id||uid())}));
       await idb.putMany("recipes", clean);
+      if(data.meals && typeof data.meals.days==="object"){ S.meals={days:data.meals.days, history:Array.isArray(data.meals.history)?data.meals.history:[]}; await saveMeals(); }
       if(data.plan && typeof data.plan==="object"){ for(const [k,l] of Object.entries(data.plan)){ if(/^\d{4}-\d\d-\d\d$/.test(k) && Array.isArray(l)) for(const id of l){ if(!planHas(k,String(id))) (S.plan[k]||(S.plan[k]=[])).push(String(id)); } } await savePlan(); }
       const imgs=Object.entries(data.images||{}); let ni=0, nf=0;
       for(const [id,url] of imgs){

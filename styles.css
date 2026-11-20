@@ -171,3 +171,8 @@ legend{font-size:12.5px;font-weight:700;color:var(--muted);padding:0 4px}
 .pick{padding:6px;border-radius:10px}
 .pick:hover{background:var(--surface-2)}
 .pick.on{background:var(--accent-soft)}
+/* Essensplan */
+.reroll{flex:none;display:grid;place-items:center;width:40px;height:40px;border-radius:10px;border:1px solid var(--line);background:var(--surface);color:var(--accent);cursor:pointer}
+.reroll:hover{border-color:var(--accent)}
+.reroll:disabled{opacity:.5;cursor:default}
+.mlabel{font-size:11.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-top:2px}
